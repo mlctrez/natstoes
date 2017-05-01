@@ -23,7 +23,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	esc, err := NewEsClient()
+	esc, err := newEsClient()
 	if err != nil {
 		panic(err)
 	}
@@ -41,7 +41,7 @@ func main() {
 		if err = json.Unmarshal(m.Data, &mdata); err != nil {
 			mdata["message"] = string(m.Data)
 		}
-		esc.PostMessage(m.Subject[3:], mdata)
+		esc.createDocument(m.Subject[3:], mdata)
 	})
 
 	wg.Wait()
@@ -53,7 +53,7 @@ type Client struct {
 	indexesLock *sync.Mutex
 }
 
-func NewEsClient() (client *Client, err error) {
+func newEsClient() (client *Client, err error) {
 	c, err := elastic.NewClient()
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func NewEsClient() (client *Client, err error) {
 	}, nil
 }
 
-func (client *Client) CreateIndex(indexName string) error {
+func (client *Client) createIndex(indexName string) error {
 	client.indexesLock.Lock()
 	defer client.indexesLock.Unlock()
 
@@ -85,7 +85,7 @@ func (client *Client) CreateIndex(indexName string) error {
 	return err
 }
 
-func (client *Client) PostMessage(indexName string, message interface{}) error {
+func (client *Client) createDocument(indexName string, message interface{}) error {
 
 	esTimestamp := "2006-01-02T15:04:05.999Z"
 	indexTimestamp := indexName + "-2006.01.02"
@@ -94,7 +94,7 @@ func (client *Client) PostMessage(indexName string, message interface{}) error {
 
 	index := tNow.Format(indexTimestamp)
 
-	if err := client.CreateIndex(index); err != nil {
+	if err := client.createIndex(index); err != nil {
 		return err
 	}
 
