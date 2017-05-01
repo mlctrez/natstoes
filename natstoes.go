@@ -34,17 +34,26 @@ func main() {
 	}
 
 	wg := &sync.WaitGroup{}
-
 	wg.Add(1)
-	nc.Subscribe("es.>", func(m *nats.Msg) {
-		mdata := make(map[string]interface{})
-		if err = json.Unmarshal(m.Data, &mdata); err != nil {
-			mdata["message"] = string(m.Data)
-		}
-		esc.createDocument(m.Subject[3:], mdata)
-	})
+
+	msgChan := make(chan *nats.Msg, 100)
+
+	for i := 0; i < 10; i++ {
+		go processChan(msgChan, esc)
+		nc.ChanQueueSubscribe("es.>", "natstoes", msgChan)
+	}
 
 	wg.Wait()
+}
+
+func processChan(ch chan *nats.Msg, client *client) {
+	for m := range ch {
+		mdata := make(map[string]interface{})
+		if err := json.Unmarshal(m.Data, &mdata); err != nil {
+			mdata["message"] = string(m.Data)
+		}
+		client.createDocument(m.Subject[3:], mdata)
+	}
 }
 
 type client struct {
@@ -53,7 +62,7 @@ type client struct {
 	indexesLock *sync.Mutex
 }
 
-func newEsClient() (client *client, err error) {
+func newEsClient() (cl *client, err error) {
 	c, err := elastic.NewClient()
 	if err != nil {
 		return nil, err
