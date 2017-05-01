@@ -47,26 +47,26 @@ func main() {
 	wg.Wait()
 }
 
-type Client struct {
+type client struct {
 	esClient    *elastic.Client
 	indexes     map[string]bool
 	indexesLock *sync.Mutex
 }
 
-func newEsClient() (client *Client, err error) {
+func newEsClient() (client *client, err error) {
 	c, err := elastic.NewClient()
 	if err != nil {
 		return nil, err
 	}
 	im := make(map[string]bool)
-	return &Client{
+	return &client{
 		esClient:    c,
 		indexes:     im,
 		indexesLock: &sync.Mutex{},
 	}, nil
 }
 
-func (client *Client) createIndex(indexName string) error {
+func (client *client) createIndex(indexName string) error {
 	client.indexesLock.Lock()
 	defer client.indexesLock.Unlock()
 
@@ -85,7 +85,7 @@ func (client *Client) createIndex(indexName string) error {
 	return err
 }
 
-func (client *Client) createDocument(indexName string, message interface{}) error {
+func (client *client) createDocument(indexName string, message interface{}) error {
 
 	esTimestamp := "2006-01-02T15:04:05.999Z"
 	indexTimestamp := indexName + "-2006.01.02"
