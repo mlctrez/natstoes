@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"github.com/nats-io/go-nats"
+	"log"
 	"os"
 )
 
@@ -22,18 +23,23 @@ func main() {
 		panic(err)
 	}
 
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 600; i++ {
 
 		mm := make(map[string]interface{})
 		mm["dataIndex"] = i
+		mm["otherdata"] = "otherdata"
 
 		md, err := json.Marshal(mm)
 		if err != nil {
 			panic(err)
 		}
 
-		nc.Publish("es.logstash", md)
-
+		err = nc.Publish("es.logstash", md)
+		if err != nil {
+			log.Println(err)
+		}
 	}
+	nc.Flush()
+	nc.Close()
 
 }

@@ -5,130 +5,102 @@ import (
 	"encoding/json"
 	"flag"
 	"github.com/nats-io/go-nats"
-	"github.com/satori/go.uuid"
 	"gopkg.in/olivere/elastic.v5"
+	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
+var natsUrl = flag.String("nats", "nats://zuul:4222", "url to nats server like nats://host:port")
+var nc *nats.Conn
+var esc *elastic.Client
+var msgChan = make(chan *nats.Msg, 1000)
+var indexes = make(map[string]bool)
+var indexesLock = &sync.Mutex{}
+
+const esTimestamp = "2006-01-02T15:04:05.999Z"
+
+func initClients() {
+	var err error
+	nc, err = nats.Connect(*natsUrl)
+	if err != nil {
+		panic(err)
+	}
+	esc, err = elastic.NewClient()
+	if err != nil {
+		panic(err)
+	}
+}
+
 func main() {
-
-	natsUrl := flag.String("nats", "", "url to nats server as in nats://host:port")
-
+	log.SetOutput(os.Stdout)
 	flag.Parse()
-	if "" == *natsUrl {
-		flag.Usage()
-		os.Exit(1)
-	}
+	initClients()
 
-	esc, err := newEsClient()
-	if err != nil {
-		panic(err)
-	}
+	nc.ChanSubscribe("es.>", msgChan)
 
-	nc, err := nats.Connect(*natsUrl)
-	if err != nil {
-		panic(err)
-	}
+	indexRequests := make([]elastic.BulkableRequest, 0)
+	indexList := make([]string, 0)
+	for {
+		select {
+		case m := <-msgChan:
+			indexName := m.Subject[3:]
+			indexTimestamp := indexName + "-2006.01.02"
 
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
+			mdata := make(map[string]interface{})
+			if err := json.Unmarshal(m.Data, &mdata); err != nil {
+				mdata["message"] = string(m.Data)
+			}
 
-	msgChan := make(chan *nats.Msg, 100)
+			tNow := time.Now().UTC()
+			mdata["@timestamp"] = tNow.Format(esTimestamp)
 
-	for i := 0; i < 10; i++ {
-		go processChan(msgChan, esc)
-		nc.ChanQueueSubscribe("es.>", "natstoes", msgChan)
-	}
+			index := tNow.Format(indexTimestamp)
+			indexList = append(indexList, index)
+			bir := elastic.NewBulkIndexRequest()
+			bir.Index(index)
+			bir.Type("data")
+			bir.Doc(mdata)
 
-	wg.Wait()
-}
+			indexRequests = append(indexRequests, bir)
 
-func processChan(ch chan *nats.Msg, client *client) {
-	for m := range ch {
-		mdata := make(map[string]interface{})
-		if err := json.Unmarshal(m.Data, &mdata); err != nil {
-			mdata["message"] = string(m.Data)
+		case <-time.After(time.Second * 1):
+			if len(indexRequests) > 0 {
+				go sendBulk(esc.Bulk().Add(indexRequests...), indexList)
+				indexRequests = make([]elastic.BulkableRequest, 0)
+				indexList = make([]string, 0)
+			}
 		}
-		client.createDocument(m.Subject[3:], mdata)
 	}
+
 }
 
-type client struct {
-	esClient    *elastic.Client
-	indexes     map[string]bool
-	indexesLock *sync.Mutex
-}
+func createIndex(indexName string) error {
+	indexesLock.Lock()
+	defer indexesLock.Unlock()
 
-func newEsClient() (cl *client, err error) {
-	c, err := elastic.NewClient()
-	if err != nil {
-		return nil, err
-	}
-	im := make(map[string]bool)
-	return &client{
-		esClient:    c,
-		indexes:     im,
-		indexesLock: &sync.Mutex{},
-	}, nil
-}
-
-func (client *client) createIndex(indexName string) error {
-	client.indexesLock.Lock()
-	defer client.indexesLock.Unlock()
-
-	if _, ok := client.indexes[indexName]; ok {
+	if _, ok := indexes[indexName]; ok {
 		return nil
 	}
-	_, err := client.esClient.CreateIndex(indexName).Do(context.Background())
+	_, err := esc.CreateIndex(indexName).Do(context.Background())
 
 	if err != nil && strings.Contains(err.Error(), "Error 400") {
 		err = nil
 	}
 
 	if err == nil {
-		client.indexes[indexName] = true
+		indexes[indexName] = true
 	}
 	return err
 }
 
-func (client *client) createDocument(indexName string, message interface{}) error {
-
-	esTimestamp := "2006-01-02T15:04:05.999Z"
-	indexTimestamp := indexName + "-2006.01.02"
-
-	tNow := time.Now().In(time.UTC)
-
-	index := tNow.Format(indexTimestamp)
-
-	if err := client.createIndex(index); err != nil {
-		return err
+func sendBulk(b *elastic.BulkService, indexes []string) {
+	for _, id := range indexes {
+		if err := createIndex(id); err != nil {
+			log.Println(err)
+		}
 	}
-
-	tdb, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-
-	td := make(map[string]interface{})
-
-	err = json.Unmarshal(tdb, &td)
-	if err != nil {
-		return err
-	}
-
-	td["@timestamp"] = tNow.Format(esTimestamp)
-
-	_, err = client.esClient.Index().
-		Index(index).
-		Type("data").
-		Id(uuid.NewV4().String()).
-		BodyJson(td).
-		Refresh("true").
-		Do(context.Background())
-
-	return err
-
+	b.Do(context.Background())
 }
